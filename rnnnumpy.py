@@ -1,4 +1,6 @@
 import numpy as np
+from datetime import datetime
+import sys
 
 class RNNNumpy:
 
@@ -60,7 +62,7 @@ class RNNNumpy:
         o, s = self.forwardPropagation(x)
         # We accumulate the gradients in these variables
         dLdU = np.zeros(self.U.shape)
-        dldV = np.zeros(self.V.shape)
+        dLdV = np.zeros(self.V.shape)
         dLdW = np.zeros(self.W.shape)
         deltaO = o
         deltaO[np.arange(len(y)), y] -= 1
@@ -71,9 +73,79 @@ class RNNNumpy:
             deltaT = self.V.T.dot(deltaO[t]) * (1 - (s[t] ** 2))
             # Backpropagation through time (for at most self.bpttTruncate steps)
             for bpttStep in np.arange(max(0, t-self.bpttTruncate), t+1)[::-1]:
-                print "Backpropagation step t=%d bptt step=%d "% (t, bpttStep)
                 dLdW += np.outer(deltaT, s[bpttStep-1])
                 dLdU[:, x[bpttStep]] += deltaT
                 # Update delta for the next step
                 deltaT = self.W.T.dot(deltaT) * (1 - s[bpttStep-1] ** 2)
         return [dLdU, dLdV, dLdW]
+        
+    def gradient_check(self, x, y, h=0.001, errorThreshold=0.01):
+        # Calculate the gradients using backpropagation. We want to check if these are correct
+        bpttGradients = self.bptt(x, y)
+        # List of all parameters we want to check
+        modelParameters = ['U', 'V', 'W']
+        # Gradient check for each parameter
+        for pidx, pname in enumerate(modelParameters):
+            # Get the actual parameter value from the model
+            parameter = operator.attrgetter(pname)(self)
+            print "Performing gradient check for parameter %s with size %d." % (pname, np.prod(parameter.shape))
+            # Iterate over each element of the parameter matrix, e.g. (0,0), (0,1), ...
+            it = np.nditer(parameter, flags=['multi_index'], op_flags=['readwrite'])
+            while not it.finished:
+                ix = it.multi_index
+                # Save the original value so we can restore it later
+                originalValue = parameter[ix]
+                # Estimate the gradient using (f(x+h) - f(x-h))/(2*h)
+                parameter[ix] = originalValue + h
+                gradplus = self.calculateTotalLoss([x], [y])
+                parameter[ix] = originalValue - h
+                gradminus = self.calculateTotalLoss([x], [y])
+                estimatedGradient = (gradplus - gradminus)/(2*h)
+                # Reset parameter to the original value
+                parameter[ix] = originalValue
+                # The gradient for this parameter calculated using backpropagation
+                backpropGradient = bpttGradients[pidx][ix]
+                # Calculate the relative error: (|x-y|/(|x|+|y|))
+                relativeError = np.abs(backpropGradient - estimatedGradient)/(np.abs(backpropGradient) + np.abs(estimatedGradient))
+                # If the error is too large, fail the gradient check
+                if relativeError > errorThreshold:
+                    print "Gradient check error: parameter=%s is=%s" % (pname, ix)
+                    print "+h Loss: %f" % gradplus
+                    print "-h Loss: %f" % gradminus
+                    print "Estimated_gradient: %f" % estimatedGradient
+                    print "Backpropagation gradient: %f" % backpropGradient
+                    print "Relative Error: %f" % relativeError
+                    return
+                it.iternext()
+            print "Gradient check for parameter %s passed." % (pname)
+            
+    def sgdStep(self, x, y, learningRate):
+        # Calculate the gradients
+        dLdU, dLdV, dLdW = self.bptt(x, y)
+        # Change the parameters according to gradients and learning rate
+        self.U -= learningRate * dLdU
+        self.V -= learningRate * dLdV
+        self.W -= learningRate * dLdW
+        
+    def trainWithSgd(self, X_train, Y_train, learningRate=0.005, nepoch=100, evaluateLossAfter=5):
+        # We keep track of the losses so we can plot them later
+        losses = []
+        numExamplesSeen = 0
+        for epoch in range(nepoch):
+            # Optionally evaluate the loss
+            if (epoch % evaluateLossAfter == 0):
+                loss = self.calculateLoss(X_train, Y_train)
+                losses.append((numExamplesSeen, loss))
+                time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                print "%s: Loss after num_examples_seen=%d epoch=%d: %f" % (time, numExamplesSeen, epoch, loss)
+                # Adjust the learning rate if loss increases
+                if (len(losses) > 1 and losses[-1][1] > losses[-2][1]):
+                    learning_rate = learning_rate * 0.5 
+                    print "Setting learning rate to %f" % learning_rate
+                sys.stdout.flush()
+            # For each training example...
+            # For each training examples
+            for i in range(len(Y_train)):
+                # One SGD step
+                self.sgdStep(X_train[i], Y_train[i], learningRate)
+                numExamplesSeen += 1

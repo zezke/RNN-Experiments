@@ -6,14 +6,57 @@ import nltk
 import sys
 from datetime import datetime
 import random
+import timeit
 
 # Own stuff
 from rnnnumpy import RNNNumpy
+from rnntheano import RNNTheano
+from utils import *
 
 vocabulary_size = 8000
 unknown_token = "UNK"
 start_token = "SENTENCE_START"
 end_token = "SENTENCE_END"
+
+def trainWithSgd(model, X_train, y_train, learningRate=0.005, nepoch=1, evaluateLossAfter=5):
+    # We keep track of the losses so we can plot them later
+    losses = []
+    numExamplesSeen = 0
+    for epoch in range(nepoch):
+        # Optionally evaluate the loss
+        if (epoch % evaluateLossAfter == 0):
+            loss = model.calculate_loss(X_train, y_train)
+            losses.append((numExamplesSeen, loss))
+            time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            print "%s: Loss after numExamplesSeen=%d epoch=%d: %f" % (time, numExamplesSeen, epoch, loss)
+            # Adjust the learning rate if loss increases
+            if (len(losses) > 1 and losses[-1][1] > losses[-2][1]):
+                learningRate = learningRate * 0.5  
+                print "Setting learning rate to %f" % learningRate
+            sys.stdout.flush()
+            # ADDED! Saving model parameters
+            save_model_parameters_theano("./data/rnn-theano-%d-%d-%s.npz" % (model.hiddenDim, model.wordDim, time), model)
+        # For each training example...
+        for i in range(len(y_train)):
+            # One SGD step
+            model.sgd_step(X_train[i], y_train[i], learningRate)
+            numExamplesSeen += 1
+
+# Sample some sentences
+def generate_sentence(model):
+    # We start the sentence with the start token
+    new_sentence = [word_to_index[start_token]]
+    # Repeat until we get an end token
+    while not new_sentence[-1] == word_to_index[end_token]:
+        next_word_probs = model.forward_propagation(new_sentence)
+        sampled_word = word_to_index[unknown_token]
+        # We don't want to sample unknown words
+        while sampled_word == word_to_index[unknown_token]:
+            samples = np.random.multinomial(1, next_word_probs[-1])
+            sampled_word = np.argmax(samples)
+        new_sentence.append(sampled_word)
+    sentence_str = [index_to_word[x] for x in new_sentence[1:-1]]
+    return sentence_str
 
 # Read the data and append the start and end tokens
 print "Reading CSV file..."
@@ -52,15 +95,24 @@ print "Example sentence after preprocessing: '%s'" % tokenized_sentences[random_
 
 # Create the training data
 X_train = np.asarray([[word_to_index[w] for w in sent[:-1]] for sent in tokenized_sentences])
-y_train = np.asarray([[word_to_index[w] for w in sent[1:]] for sent in tokenized_sentences])
+Y_train = np.asarray([[word_to_index[w] for w in sent[1:]] for sent in tokenized_sentences])
 
 # Print an training data example
-x_example, y_example = X_train[random_index], y_train[random_index]
+x_example, y_example = X_train[random_index], Y_train[random_index]
 print "x:\n%s\n%s" % (" ".join([index_to_word[x] for x in x_example]), x_example)
 print "\ny:\n%s\n%s" % (" ".join([index_to_word[x] for x in y_example]), y_example)
 
+# Train the RNN
 np.random.seed(10)
-model = RNNNumpy(vocabulary_size)
-# Limit to 1000 examples to save time
-print "Expected Loss for random predictions: %f" % np.log(vocabulary_size)
-print "Actual loss: %f" % model.calculateLoss(X_train[:1000], y_train[:1000])
+model = RNNTheano(vocabulary_size, hiddenDim=50)
+losses = trainWithSgd(model, X_train, Y_train, nepoch=10, evaluateLossAfter=1)
+ 
+num_sentences = 10
+senten_min_length = 7
+ 
+for i in range(num_sentences):
+    sent = []
+    # We want long sentences, not sentences with one or two words
+    while len(sent) < senten_min_length:
+        sent = generate_sentence(model)
+    print " ".join(sent)
